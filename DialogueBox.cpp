@@ -194,37 +194,47 @@ UDialogueBox::UDialogueBox(const FObjectInitializer& ObjectInitializer)
 	bHasFinishedPlaying = true;
 }
 
-void UDialogueBox::PlayLine(const FText& InLine)
+void UDialogueBox::SetLine(const FText& InLine)
 {
 	check(GetWorld());
+
+	CurrentLine = InLine;
+	BuiltString = WrappedString(LineText, CurrentLine);
+	BuiltStringIterator = WrappedStringIterator(*BuiltString);
+
+	MaxLetterIndex = 0;
+}
+
+void UDialogueBox::PlayLine(const FText& InLine)
+{
+	SetLine(InLine);
+	PlayToEnd();
+}
+
+void UDialogueBox::PlayToEnd()
+{
+	PlayUntil(BuiltString->MaxLetterIndex);
+}
+void UDialogueBox::PlayUntil(int32 idx)
+{
+	check(BuiltString);
+	check(BuiltStringIterator);
+
+	MaxLetterIndex = idx;
 
 	FTimerManager& TimerManager = GetWorld()->GetTimerManager();
 	TimerManager.ClearTimer(LetterTimer);
 
-	CurrentLine = InLine;
-	CurrentLetterIndex = 0;
-	CurrentSegmentIndex = 0;
-	MaxLetterIndex = 0;
-	Segments.Empty();
-	CachedSegmentText.Empty();
-
 	if (CurrentLine.IsEmpty())
 	{
-		if (IsValid(LineText))
-		{
-			LineText->SetTextFullyTyped(FText::GetEmpty());
-		}
-
 		bHasFinishedPlaying = true;
-		OnLineFinishedPlaying();
-
-		SetVisibility(ESlateVisibility::Hidden);
+		OnLineFinishedPlaying.Broadcast();
 	}
 	else
 	{
 		if (IsValid(LineText))
 		{
-			LineText->SetTextPartiallyTyped(FText::GetEmpty(), CurrentLine);
+			LineText->SetTextPartiallyTyped(BuiltStringIterator->get(), CurrentLine);
 		}
 
 		bHasFinishedPlaying = false;
@@ -233,8 +243,6 @@ void UDialogueBox::PlayLine(const FText& InLine)
 		Delegate.BindUObject(this, &ThisClass::PlayNextLetter);
 
 		TimerManager.SetTimer(LetterTimer, Delegate, LetterPlayTime, true);
-
-		SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	}
 }
 
@@ -243,48 +251,61 @@ void UDialogueBox::SkipToLineEnd()
 	FTimerManager& TimerManager = GetWorld()->GetTimerManager();
 	TimerManager.ClearTimer(LetterTimer);
 
-	CurrentLetterIndex = MaxLetterIndex - 1;
+	BuiltStringIterator->setCurrentLetterIndex(MaxLetterIndex);
 	if (IsValid(LineText))
 	{
-		LineText->SetTextFullyTyped(CurrentLine);
+		if (MaxLetterIndex == BuiltString->MaxLetterIndex)
+		{
+			LineText->SetTextFullyTyped(CurrentLine);
+		}
+		else
+		{
+			LineText->SetTextPartiallyTyped(BuiltStringIterator->get(), CurrentLine);
+		}
 	}
 
-	bHasFinishedPlaying = true;
-	OnLineFinishedPlaying();
+	if (MaxLetterIndex == BuiltString->MaxLetterIndex)
+	{
+		bHasFinishedPlaying = true;
+	}
+	OnLineFinishedPlaying.Broadcast();
 }
 
 void UDialogueBox::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
-	LineText->ConfigureFromParent(&Segments, &CurrentSegmentIndex);
+	if (BuiltString && BuiltStringIterator)
+	{
+		LineText->ConfigureFromParent(&BuiltString->Segments, &BuiltStringIterator->getCurrentSegmentIndex());
+	}
 }
 
 void UDialogueBox::PlayNextLetter()
 {
-	if (Segments.IsEmpty())
-	{
-		CalculateWrappedString();
-	}
-
-	FString WrappedString = CalculateSegments();
-
 	// TODO: How do we keep indexing of text i18n-friendly?
-	if (CurrentLetterIndex < MaxLetterIndex)
+	if (BuiltStringIterator->getCurrentLetterIndex() < MaxLetterIndex)
 	{
 		if (IsValid(LineText))
 		{
-			LineText->SetTextPartiallyTyped(FText::FromString(WrappedString), CurrentLine);
+			LineText->SetTextPartiallyTyped(BuiltStringIterator->get(), CurrentLine);
 		}
 
-		OnPlayLetter();
-		++CurrentLetterIndex;
+		OnPlayLetter.Broadcast();
+		++(*BuiltStringIterator);
 	}
 	else
 	{
 		if (IsValid(LineText))
 		{
-			LineText->SetTextFullyTyped(CurrentLine);
+			if (MaxLetterIndex == BuiltString->MaxLetterIndex)
+			{
+				LineText->SetTextFullyTyped(CurrentLine);
+			}
+			else
+			{
+				LineText->SetTextPartiallyTyped(BuiltStringIterator->get(), CurrentLine);
+			}
 		}
 
 		FTimerManager& TimerManager = GetWorld()->GetTimerManager();
@@ -297,7 +318,7 @@ void UDialogueBox::PlayNextLetter()
 	}
 }
 
-void UDialogueBox::CalculateWrappedString()
+UDialogueBox::WrappedString::WrappedString(UDialogueTextBlock* LineText, const FText& CurrentLine)
 {
 	if (IsValid(LineText) && LineText->GetTextParser().IsValid())
 	{
@@ -335,11 +356,11 @@ void UDialogueBox::CalculateWrappedString()
 	}
 }
 
-FString UDialogueBox::CalculateSegments()
+FString UDialogueBox::WrappedStringIterator::evaluate()
 {
-	while (CurrentSegmentIndex < Segments.Num())
+	while (CurrentSegmentIndex < m_parent.Segments.Num())
 	{
-		const FDialogueTextSegment& Segment = Segments[CurrentSegmentIndex];
+		const FDialogueTextSegment& Segment = m_parent.Segments[CurrentSegmentIndex];
 
 		int32 SegmentStartIndex = std::max(Segment.RunInfo.OriginalRange.BeginIndex, Segment.RunInfo.ContentRange.BeginIndex);
 		CurrentLetterIndex = std::max(CurrentLetterIndex, SegmentStartIndex);
