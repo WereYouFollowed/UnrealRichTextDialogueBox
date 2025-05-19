@@ -15,7 +15,7 @@ struct FDialogueTextSegment;
  * A text block that exposes more information about text layout.
  */
 UCLASS()
-class UDialogueTextBlock : public URichTextBlock
+class SALCORE_GAME_API UDialogueTextBlock : public URichTextBlock
 {
 	GENERATED_BODY()
 
@@ -51,14 +51,14 @@ private:
 	const int32* CurrentSegmentIndex;
 };
 
-struct FDialogueTextSegment
+struct SALCORE_GAME_API FDialogueTextSegment
 {
 	FString Text;
 	FTextRunParseResults RunInfo;
 };
 
 UCLASS()
-class UDialogueBox : public UUserWidget
+class SALCORE_GAME_API UDialogueBox : public UUserWidget
 {
 	GENERATED_BODY()
 
@@ -77,46 +77,95 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dialogue Box")
 	float EndHoldTime = 0.15f;
 
+	// Initialise future contents of dialogue box, but do not begin playing yet.
+	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
+	void SetLine(const FText& InLine);
 	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
 	void PlayLine(const FText& InLine);
+
+	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
+	void PlayToEnd();
+	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
+	void PlayUntil(int32 idx);
 
 	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
 	void GetCurrentLine(FText& OutLine) const { OutLine = CurrentLine; }
 
 	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
 	bool HasFinishedPlayingLine() const { return bHasFinishedPlaying; }
+	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
+	bool HasFinishedPlayingAnimation() const { return !LetterTimer.IsValid(); }
 
 	UFUNCTION(BlueprintCallable, Category = "Dialogue Box")
 	void SkipToLineEnd();
 
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FDialogueBoxOnPlayLetter);
+	UPROPERTY(BlueprintAssignable, Category = "Dialogue Box")
+	FDialogueBoxOnPlayLetter OnPlayLetter;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FDialogueBoxOnLineFinishedPlaying);
+	UPROPERTY(BlueprintAssignable, Category = "Dialogue Box")
+	FDialogueBoxOnLineFinishedPlaying OnLineFinishedPlaying;
+
 protected:
-	UFUNCTION(BlueprintImplementableEvent, Category = "Dialogue Box")
-	void OnPlayLetter();
-
-	UFUNCTION(BlueprintImplementableEvent, Category = "Dialogue Box")
-	void OnLineFinishedPlaying();
-
 	void NativeOnInitialized() override;
 
 private:
 	void PlayNextLetter();
 
-	void CalculateWrappedString();
-	FString CalculateSegments();
+	struct WrappedString
+	{
+		WrappedString(UDialogueTextBlock* LineText, const FText& CurrentLine);
+
+		TArray<FDialogueTextSegment> Segments;
+		int32 MaxLetterIndex;
+	};
+	class WrappedStringIterator
+	{
+	public:
+		WrappedStringIterator(const WrappedString& parent)
+		:
+		m_parent(parent)
+		{
+		}
+
+		void operator++()
+		{
+			CurrentLetterIndex++;
+			CachedResultText = FText::FromString(evaluate());
+		}
+		const FText& get() const
+		{
+			return CachedResultText;
+		}
+
+		const int32& getCurrentSegmentIndex() const { return CurrentSegmentIndex; }
+		void setCurrentLetterIndex(int32 idx) { CurrentLetterIndex = idx; CachedResultText = FText::FromString(evaluate()); }
+		const int32& getCurrentLetterIndex () const { return CurrentLetterIndex;  }
+
+	private:
+		FString evaluate();
+
+		// The section of the text that's already been printed out and won't ever change.
+		// This lets us cache some of the work we've already done. We can't cache absolutely
+		// everything as the last few characters of a string may change if they're related to
+		// a named run that hasn't been completed yet.
+		FString CachedSegmentText;
+
+		FText CachedResultText;
+
+		int32 CurrentSegmentIndex = 0;
+		int32 CurrentLetterIndex = 0;
+
+		const WrappedString& m_parent;
+	};
 
 	UPROPERTY()
 	FText CurrentLine;
 
-	TArray<FDialogueTextSegment> Segments;
+	TOptional<WrappedString> BuiltString;
+	TOptional<WrappedStringIterator> BuiltStringIterator;
 
-	// The section of the text that's already been printed out and won't ever change.
-	// This lets us cache some of the work we've already done. We can't cache absolutely
-	// everything as the last few characters of a string may change if they're related to
-	// a named run that hasn't been completed yet.
-	FString CachedSegmentText;
-
-	int32 CurrentSegmentIndex = 0;
-	int32 CurrentLetterIndex = 0;
 	int32 MaxLetterIndex = 0;
 
 	uint32 bHasFinishedPlaying : 1;
